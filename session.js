@@ -149,7 +149,7 @@ export function createSession({ backend, code, me, onChange = () => {}, timers =
     const st = data.state
     if (!joined || st?.phase !== 'clues') return false
     if (toArray(st.turnOrder)[st.turnIndex] !== me.uid) return false
-    const t = clean(text, 24)
+    const t = clean(text, 60) // l'indizio può essere una frase breve
     if (!t) return false
     backend.set(`${base}/clues/${me.uid}`, t)
     return true
