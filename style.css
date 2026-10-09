@@ -200,26 +200,6 @@ input[type='text']:focus {
   font-variant-numeric: tabular-nums;
 }
 
-.role-pill {
-  position: absolute;
-  top: 76px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-  max-width: calc(100vw - 150px);
-  padding: 6px 14px;
-  border: 1px solid var(--good);
-  border-radius: 999px;
-  background: var(--panel);
-  font-size: 0.95rem;
-  text-align: center;
-}
-
-.role-pill.impostor {
-  border-color: var(--accent);
-  color: #ffb3c0;
-}
-
 .clue-log {
   position: absolute;
   left: 16px;
@@ -309,42 +289,6 @@ button.vote img {
   height: 28px;
   border-radius: 50%;
   object-fit: cover;
-}
-
-/* Scheda ruolo (non blocca il resto) */
-.role-card {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 9;
-  width: min(92vw, 380px);
-  padding: 24px;
-  border: 2px solid var(--accent);
-  border-radius: 18px;
-  background: rgba(15, 16, 32, 0.98);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  text-align: center;
-  box-shadow: 0 10px 50px rgba(0, 0, 0, 0.6);
-}
-
-.eyebrow {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-}
-
-.big {
-  font-size: clamp(1.8rem, 7vw, 2.6rem);
-  line-height: 1.1;
-  color: #ffffff;
-}
-
-.big.bad {
-  color: var(--accent);
 }
 
 /* Pannello impostazioni (ingranaggio) */
@@ -530,12 +474,85 @@ summary {
   opacity: 0;
 }
 
-@media (max-width: 700px) {
-  .clue-log {
-    display: none;
-  }
-  .banner {
-    font-size: 0.9rem;
-    padding: 8px 14px;
-  }
+
+/* ---------- Personaggino (foto + gambe) ---------- */
+.char{--leg:#9aa0a6;display:flex;flex-direction:column;align-items:center}
+.char .head{width:64px;height:64px;border-radius:50%;border:3px solid #fff;background:#6b72c4;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:1.8rem;z-index:1}
+.char .head img{width:100%;height:100%;object-fit:cover}
+.char .legs{display:flex;gap:8px;margin-top:-4px}
+.char .legs i{width:10px;height:26px;border-radius:5px;background:var(--leg)}
+.char.big{transform:scale(1.5);margin:34px 0 22px}
+.char.small{transform:scale(.55);margin:-14px -10px -22px}
+
+/* ---------- Schermo nero del ruolo ---------- */
+.blackout{position:absolute;inset:0;z-index:40;background:#000;display:flex;align-items:center;justify-content:center;cursor:pointer;animation:fade .5s}
+.reveal{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;padding:20px}
+.role-title{font-size:clamp(2rem,8vw,3.4rem);text-transform:uppercase;letter-spacing:.05em}
+.reveal.crew .role-title{color:#7ee081}
+.reveal.imp .role-title{color:var(--accent);text-shadow:0 0 30px rgba(255,77,109,.6)}
+.role-sub{color:var(--muted)}
+.role-word{font-size:clamp(2.2rem,10vw,4rem);font-weight:800}
+.role-cat{color:var(--muted)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+
+/* ---------- Tavolo (vista dall'alto) ---------- */
+.table-screen{position:absolute;inset:0;z-index:1}
+.felt{position:absolute;left:50%;top:50%;width:min(86vw,900px);height:min(66vh,600px);transform:translate(-50%,-50%);border-radius:50%;
+  background:radial-gradient(ellipse at center,#1f6b4a,#124030);border:8px solid #2b2e5c;box-shadow:inset 0 0 60px rgba(0,0,0,.5),0 10px 50px rgba(0,0,0,.6)}
+.table-screen .felt{top:52%;height:min(58vh,520px)}
+.center-card{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);width:150px;min-height:200px;padding:14px 10px;border-radius:16px;
+  background:#fff;color:#14152b;border:6px solid #ffd54f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.5);transform:translate(-50%,-50%) rotate(-4deg)}
+.center-card.imp{border-color:var(--accent)}
+.center-card .label{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:#666}
+.center-card .word{font-size:1.5rem;font-weight:800;line-height:1.1;word-break:break-word}
+.center-card .cat{font-size:.75rem;color:#666}
+.seat{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:3px;z-index:3;max-width:130px}
+
+.seat .av{--leg:#9aa0a6;width:62px;height:62px;border-radius:50%;border:4px solid var(--leg);background:#6b72c4;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:1.6rem}
+.seat .av img{width:100%;height:100%;object-fit:cover}
+.seat.me .av{box-shadow:0 0 0 3px #ffd54f}
+.seat.active .av{animation:glow 1s infinite alternate;box-shadow:0 0 0 4px #fff,0 0 22px 8px var(--accent)}
+.seat .nm{font-size:.8rem;font-weight:700;background:rgba(10,10,22,.85);padding:1px 8px;border-radius:999px;white-space:nowrap}
+.seat .say{order:-1;background:#fff;color:#14152b;padding:5px 10px;border-radius:12px;font-size:.8rem;font-weight:600;max-width:150px;text-align:center;line-height:1.2;word-break:break-word}
+.seat.low .say{order:3}
+@keyframes glow{from{transform:scale(1)}to{transform:scale(1.08)}}
+
+/* ---------- Tablet del voto ---------- */
+.modal-wrap.solid{background:#000}
+.tablet{position:relative;width:min(96vw,760px);padding:16px;border-radius:26px;background:#2a2d3a;border:3px solid #555a70;box-shadow:0 20px 60px rgba(0,0,0,.7)}
+.tablet .cam{position:absolute;left:50%;top:5px;width:8px;height:8px;border-radius:50%;background:#111;transform:translateX(-50%)}
+.tablet .screen{max-width:none;width:100%;padding:14px;gap:12px;align-items:stretch;text-align:left;border-radius:12px;background:#0e1830;border:2px solid #3a5f9f;max-height:80vh;overflow:auto}
+.tablet header{display:flex;justify-content:space-between;align-items:center}
+.tablet h2{font-size:1.2rem}
+.tablet .timer{padding:2px 10px;border-radius:999px;background:var(--accent);font-weight:700}
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.tablet button.tile{display:flex;align-items:center;gap:10px;padding:8px 10px;text-align:left;font-size:1rem;border:2px solid #3a5f9f;background:#16264a;border-radius:10px}
+.tablet button.tile:hover:not(:disabled){background:#1d3466;transform:none}
+.tablet button.tile.sel{border-color:#ffd54f;background:#3b3a1a}
+.tile .av{--leg:#9aa0a6;flex:none;width:44px;height:44px;border-radius:50%;border:3px solid var(--leg);overflow:hidden;background:#6b72c4;display:flex;align-items:center;justify-content:center}
+.tile .av img{width:100%;height:100%;object-fit:cover}
+.tile .who{display:flex;flex-direction:column;min-width:0}
+.tile .pick{font-size:.75rem;color:#ffd54f}
+.tile .stk{font-size:.75rem;color:#7ee081}
+.t-clues{padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.05);font-size:.85rem}
+.t-clues h3{font-size:.75rem;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.tablet footer{font-size:.85rem;color:var(--muted);text-align:center}
+
+/* ---------- Schermata finale ---------- */
+.endscreen{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;max-width:560px;padding:20px;max-height:100vh;overflow:auto}
+.end-title{font-size:clamp(2rem,8vw,3.2rem);text-transform:uppercase}
+.endscreen.win .end-title{color:#7ee081}
+.endscreen.lose .end-title{color:var(--accent)}
+.who-row{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center}
+.who-char{display:flex;flex-direction:column;align-items:center;font-size:.85rem;width:80px}
+.who-char.imp em{color:var(--accent);font-style:normal;font-weight:700}
+
+@media (max-width:700px){
+  .banner{font-size:.9rem;padding:8px 14px}
+  .clue-log{width:140px;top:70px;font-size:.78rem;max-height:30vh}
+  .seat .av{width:46px;height:46px}
+  .seat .say{font-size:.7rem;max-width:100px}
+  .center-card{width:110px;min-height:150px}
+  .center-card .word{font-size:1.1rem}
+  .tiles{grid-template-columns:1fr}
 }

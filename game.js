@@ -508,8 +508,8 @@ export function startGame(root, onExit, opts = {}) {
       .map((uid, k) => {
         const p = d.players[uid]
         const ang = Math.PI / 2 + (k * 2 * Math.PI) / n
-        const left = 50 + 41 * Math.cos(ang)
-        const top = 50 + 36 * Math.sin(ang)
+        const left = 52 + 38 * Math.cos(ang)
+        const top = 55 + 29 * Math.sin(ang)
         const low = Math.sin(ang) > 0.5
         const clue = d.clues[uid]
         const img = p.photo ? `<img src="${esc(p.photo)}" alt="" />` : '<span aria-hidden="true">👤</span>'
