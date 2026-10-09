@@ -1,5 +1,10 @@
-// Interfaccia grafica della partita: stanza pentagonale, lobby, ingranaggio con link d'invito,
-// ruoli, indizi, voto e indovinello finale. La logica sta in session.js, la rete in backend.js.
+// Interfaccia grafica della partita.
+//   1. Lobby: stanza pentagonale dove si cammina (WASD), ingranaggio con il link d'invito.
+//   2. Inizio partita: schermo nero con il tuo ruolo, la parola e il tuo personaggino.
+//   3. Partita: tavolo con le icone dei giocatori, ruolo/parola al centro, indizi nei fumetti
+//      e nella lista in alto a sinistra.
+//   4. Voto: tablet a schermo. Fine: schermata nera con il risultato.
+// La logica sta in session.js, la rete in backend.js.
 
 import { getBackend } from './backend.js'
 import { createSession, MIN_PLAYERS, MAX_PLAYERS, toArray, normalize } from './session.js'
@@ -8,6 +13,8 @@ const PHOTO_KEY = 'sotto-copertura:foto-profilo'
 const NAME_KEY = 'sotto-copertura:nome'
 const UID_KEY = 'sotto-copertura:uid'
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const REVEAL_MS = 6500 // durata dello schermo nero con il ruolo
+const CLUE_MS = 45000 // tempo per scrivere l'indizio (è una frase, serve più tempo)
 
 // Pentagono regolare con raggio 1 (vertice verso l'alto).
 const STEP = (2 * Math.PI) / 5
@@ -95,6 +102,13 @@ function fileToAvatar(file) {
   })
 }
 
+// Il "personaggino": foto del profilo come testa + due gambe del colore del giocatore.
+function charHtml(p, size = '') {
+  const img = p && p.photo ? `<img src="${esc(p.photo)}" alt="" />` : '<span aria-hidden="true">👤</span>'
+  return `<div class="char ${size}" style="--leg:${esc((p && p.color) || '#9aa0a6')}">
+    <div class="head">${img}</div><div class="legs"><i></i><i></i></div></div>`
+}
+
 // ---------- Gioco ----------
 
 export function startGame(root, onExit, opts = {}) {
@@ -103,15 +117,15 @@ export function startGame(root, onExit, opts = {}) {
   root.innerHTML = `
     <div class="room">
       <canvas id="room-canvas"></canvas>
+      <section class="table-screen" id="table" hidden></section>
       <button class="icon-btn back" data-act="leave" title="Esci dalla stanza" aria-label="Esci dalla stanza">←</button>
       <button class="icon-btn gear" data-act="gear" title="Impostazioni e invito" aria-label="Impostazioni">${GEAR_SVG}</button>
       <div class="banner" id="banner" hidden></div>
-      <div class="role-pill" id="role" hidden></div>
       <aside class="clue-log" id="clue-log" hidden></aside>
       <section class="settings" id="settings" hidden></section>
-      <div class="role-card" id="rolecard" hidden></div>
       <div class="action" id="action" hidden></div>
       <div class="modal-wrap" id="modal" hidden></div>
+      <div class="blackout" id="blackout" data-act="revealok" hidden></div>
       <div class="toasts" id="toasts"></div>
     </div>
   `
@@ -119,13 +133,13 @@ export function startGame(root, onExit, opts = {}) {
   const $ = (sel) => root.querySelector(sel)
   const canvas = $('#room-canvas')
   const ctx = canvas.getContext('2d')
+  const elTable = $('#table')
   const elBanner = $('#banner')
-  const elRole = $('#role')
-  const elRoleCard = $('#rolecard')
   const elLog = $('#clue-log')
   const elSettings = $('#settings')
   const elAction = $('#action')
   const elModal = $('#modal')
+  const elBlackout = $('#blackout')
   const elToasts = $('#toasts')
 
   // ---------- Stato ----------
@@ -137,12 +151,12 @@ export function startGame(root, onExit, opts = {}) {
   let fatal = false
   let destroyed = false
   let settingsOpen = false
-  let roleShownRound = -1
-  let roleTimer = null
+  let revealRound = -1
+  let revealTimer = null
   let lastNoticeSeq = -1
 
-  const sprites = new Map() // uid -> {x, y, phase, mv, init, img, imgSrc}
-  const names = new Map()
+  const sprites = new Map() // uid -> {x, y, phase, mv, init, img, imgSrc} (solo per la lobby)
+  const info = new Map() // uid -> dati del giocatore, anche dopo che è uscito
   const drafts = {}
   const sigs = {}
   const keys = {}
@@ -154,9 +168,13 @@ export function startGame(root, onExit, opts = {}) {
   const lastSent = { x: 0, y: 0, mv: false, t: 0 }
 
   const data = () => session.data
-  const nameOf = (uid) => names.get(uid) || '???'
+  const nameOf = (uid) => (info.get(uid) || {}).name || '???'
+  const inGame = () => {
+    const st = session && session.data.state
+    return !!st && st.phase !== 'lobby'
+  }
 
-  // ---------- Dimensioni ----------
+  // ---------- Dimensioni (canvas della lobby) ----------
   let w = 0
   let h = 0
   let R = 0
@@ -186,7 +204,7 @@ export function startGame(root, onExit, opts = {}) {
 
   // ---------- Input ----------
   const isTyping = (t) => t && t.closest && t.closest('input, textarea')
-  const controlsOn = () => connected && !fatal && elModal.hidden
+  const controlsOn = () => connected && !fatal && elModal.hidden && elBlackout.hidden && !inGame()
 
   const onKeyDown = (e) => {
     if (e.code === 'Escape') {
@@ -245,6 +263,7 @@ export function startGame(root, onExit, opts = {}) {
 
   function showCard(html) {
     sigs.modal = null
+    elModal.classList.remove('solid')
     elModal.hidden = false
     elModal.innerHTML = html
     clearKeys()
@@ -312,7 +331,7 @@ export function startGame(root, onExit, opts = {}) {
         if (!roomCode) throw new Error('codice')
       }
 
-      session = createSession({ backend, code: roomCode, me, onChange: onData })
+      session = createSession({ backend, code: roomCode, me, onChange: onData, timers: { clue: CLUE_MS } })
       const res = await session.join()
       if (!res.ok) {
         session = null
@@ -365,7 +384,7 @@ export function startGame(root, onExit, opts = {}) {
   function onData(d) {
     if (!connected || destroyed) return
     for (const [uid, p] of Object.entries(d.players)) {
-      names.set(uid, p.name)
+      info.set(uid, p)
       ensureSprite(uid, p)
     }
     for (const uid of [...sprites.keys()]) if (!d.players[uid]) sprites.delete(uid)
@@ -376,35 +395,65 @@ export function startGame(root, onExit, opts = {}) {
       toast(st.notice)
     }
 
-    // Scheda "il tuo ruolo" a inizio partita
-    if (st && st.phase === 'clues' && d.secret && st.round !== roleShownRound && toArray(st.participants).includes(me.uid)) {
-      roleShownRound = st.round
-      elRoleCard.hidden = false
-      clearTimeout(roleTimer)
-      roleTimer = setTimeout(closeRoleCard, 12000)
+    // Schermo nero con il ruolo, una volta a inizio partita
+    if (st && st.phase === 'clues' && d.secret && st.round !== revealRound && toArray(st.participants).includes(me.uid)) {
+      revealRound = st.round
+      openReveal()
     }
-    if (!st || st.phase === 'lobby') closeRoleCard()
+    if (!st || st.phase === 'lobby') closeReveal()
 
     renderHud()
   }
 
-  function closeRoleCard() {
-    clearTimeout(roleTimer)
-    elRoleCard.hidden = true
-  }
-
-  // ---------- HUD ----------
-  const timeLeft = () => {
-    const dl = session?.data.state?.deadline
-    return dl ? Math.max(0, Math.ceil((dl - session.backend.now()) / 1000)) : 0
-  }
-
+  // ---------- Schermo nero del ruolo (come l'introduzione di Among Us) ----------
   function myRole() {
     const d = data()
     const st = d.state
     if (!st || st.phase === 'lobby' || !d.secret) return null
     if (!toArray(st.participants).includes(me.uid)) return null
     return { imp: d.secret.impostor === me.uid, word: d.secret.word, category: d.secret.category }
+  }
+
+  function openReveal() {
+    const r = myRole()
+    if (!r) return
+    clearKeys()
+    const mine = info.get(me.uid) || me
+    sigs.blackout = null
+    elBlackout.hidden = false
+    elBlackout.innerHTML = r.imp
+      ? `<div class="reveal imp">
+           <h1 class="role-title">Sei l'impostore</h1>
+           <p class="role-sub">Non conosci la parola segreta. Nessuno sa chi sei.</p>
+           <div class="role-word">???</div>
+           <p class="role-cat">Categoria: <b>${esc(r.category)}</b></p>
+           ${charHtml(mine, 'big')}
+           <p class="hint">Tocca per continuare</p>
+         </div>`
+      : `<div class="reveal crew">
+           <h1 class="role-title">Sei un innocente</h1>
+           <p class="role-sub">La parola segreta è</p>
+           <div class="role-word">${esc(cap(r.word))}</div>
+           <p class="role-cat">Categoria: <b>${esc(r.category)}</b></p>
+           ${charHtml(mine, 'big')}
+           <p class="hint">Tocca per continuare</p>
+         </div>`
+    clearTimeout(revealTimer)
+    revealTimer = setTimeout(closeReveal, REVEAL_MS)
+  }
+
+  function closeReveal() {
+    clearTimeout(revealTimer)
+    if (!elBlackout.hidden) {
+      elBlackout.hidden = true
+      elBlackout.innerHTML = ''
+    }
+  }
+
+  // ---------- HUD ----------
+  const timeLeft = () => {
+    const dl = session?.data.state?.deadline
+    return dl ? Math.max(0, Math.ceil((dl - session.backend.now()) / 1000)) : 0
   }
 
   function bannerInfo() {
@@ -431,35 +480,64 @@ export function startGame(root, onExit, opts = {}) {
         return "Votate: chi è l'impostore?"
       case 'guess':
         return `${nameOf(st.accused)} era l'impostore! Ora prova a indovinare la parola`
-      case 'result':
-        return st.winner === 'crew' ? 'Vincono i giocatori!' : "Vince l'impostore!"
       default:
         return ''
     }
   }
 
-  function roleHtml() {
-    const r = myRole()
-    if (!r) return ''
-    return r.imp
-      ? `<b>Sei l'IMPOSTORE</b> · Categoria: ${esc(r.category)}`
-      : `Parola segreta: <b>${esc(cap(r.word))}</b> · ${esc(r.category)}`
+  // Giocatori seduti al tavolo, con me sempre in basso (come in UNO).
+  function seatOrder() {
+    const d = data()
+    const parts = toArray(d.state.participants)
+    const ordered = session
+      .playerList()
+      .map((p) => p.uid)
+      .filter((u) => parts.includes(u))
+    const i = ordered.indexOf(me.uid)
+    return i < 0 ? ordered : [...ordered.slice(i), ...ordered.slice(0, i)]
   }
 
-  function roleCardHtml() {
+  function tableHtml() {
+    const d = data()
+    const st = d.state
+    const seats = seatOrder()
+    const n = seats.length
+    const cur = st.phase === 'clues' ? toArray(st.turnOrder)[st.turnIndex] : null
+
+    const seatsHtml = seats
+      .map((uid, k) => {
+        const p = d.players[uid]
+        const ang = Math.PI / 2 + (k * 2 * Math.PI) / n
+        const left = 50 + 41 * Math.cos(ang)
+        const top = 50 + 36 * Math.sin(ang)
+        const low = Math.sin(ang) > 0.5
+        const clue = d.clues[uid]
+        const img = p.photo ? `<img src="${esc(p.photo)}" alt="" />` : '<span aria-hidden="true">👤</span>'
+        return `<div class="seat ${uid === me.uid ? 'me' : ''} ${uid === cur ? 'active' : ''} ${low ? 'low' : ''}"
+            style="left:${left.toFixed(2)}%;top:${top.toFixed(2)}%">
+          <div class="av" style="--leg:${esc(p.color || '#9aa0a6')}">${img}</div>
+          <span class="nm">${esc(p.name)}${uid === me.uid ? ' (tu)' : ''}</span>
+          ${clue != null ? `<span class="say">${esc(clue)}</span>` : ''}
+        </div>`
+      })
+      .join('')
+
     const r = myRole()
-    if (!r) return ''
-    return r.imp
-      ? `<p class="eyebrow">Il tuo ruolo</p>
-         <h2 class="big bad">SEI L'IMPOSTORE</h2>
-         <p>Non conosci la parola segreta.<br />Categoria: <b>${esc(r.category)}</b></p>
-         <p class="hint">Dai indizi credibili senza farti scoprire!</p>
-         <button data-act="roleok">Ho capito</button>`
-      : `<p class="eyebrow">Sei un giocatore innocente</p>
-         <h2 class="big">${esc(cap(r.word))}</h2>
-         <p>Categoria: <b>${esc(r.category)}</b></p>
-         <p class="hint">Dai un indizio che mostri che la conosci, senza renderla troppo ovvia.</p>
-         <button data-act="roleok">Ho capito</button>`
+    const center = r
+      ? r.imp
+        ? `<div class="center-card imp">
+             <span class="label">Il tuo ruolo</span>
+             <span class="word">Impostore</span>
+             <span class="cat">Categoria: ${esc(r.category)}</span>
+           </div>`
+        : `<div class="center-card">
+             <span class="label">La tua parola</span>
+             <span class="word">${esc(cap(r.word))}</span>
+             <span class="cat">Categoria: ${esc(r.category)}</span>
+           </div>`
+      : ''
+
+    return `<div class="felt"></div>${center}${seatsHtml}`
   }
 
   function actionHtml() {
@@ -476,38 +554,25 @@ export function startGame(root, onExit, opts = {}) {
       const cur = toArray(st.turnOrder)[st.turnIndex]
       if (cur === me.uid && d.clues[me.uid] == null)
         return `<div class="row">
-          <input id="clue-input" type="text" maxlength="24" placeholder="Il tuo indizio (una parola)" autocomplete="off" />
+          <input id="clue-input" type="text" maxlength="60" placeholder="Scrivi il tuo indizio (anche una frase)" autocomplete="off" />
           <button data-act="clue">Invia</button>
         </div>`
-      return ''
-    }
-    if (st.phase === 'voting') {
-      const alive = toArray(st.participants).filter((u) => d.players[u])
-      const voted = alive.filter((u) => d.votes[u]).length
-      const mine = d.votes[me.uid] || null
-      const btns = alive
-        .filter((u) => u !== me.uid)
-        .map((u) => {
-          const p = d.players[u]
-          const img = p.photo ? `<img src="${esc(p.photo)}" alt="" />` : ''
-          return `<button class="vote ${mine === u ? 'sel' : ''}" data-act="vote" data-uid="${esc(u)}">${img}${esc(p.name)}</button>`
-        })
-        .join('')
-      return `<p class="hint">${mine ? 'Hai votato (puoi cambiare voto).' : 'Tocca il nome di chi sospetti.'} Hanno votato ${voted}/${alive.length}</p>
-        <div class="vote-grid">${btns}</div>`
     }
     return ''
+  }
+
+  function cluesRows(d, st) {
+    return toArray(st.turnOrder)
+      .filter((u) => d.clues[u] != null)
+      .map((u) => `<div class="lg-row"><span>${esc(nameOf(u))}</span><b>${esc(d.clues[u])}</b></div>`)
+      .join('')
   }
 
   function logHtml() {
     const d = data()
     const st = d.state
     if (!st || st.phase === 'lobby') return ''
-    const order = toArray(st.turnOrder)
-    const rows = order
-      .filter((u) => d.clues[u] != null)
-      .map((u) => `<div class="lg-row"><span>${esc(nameOf(u))}</span><b>${esc(d.clues[u])}</b></div>`)
-      .join('')
+    const rows = cluesRows(d, st)
     return rows ? `<h3>Indizi</h3>${rows}` : ''
   }
 
@@ -529,10 +594,48 @@ export function startGame(root, onExit, opts = {}) {
     }
   }
 
+  // Il tablet del voto (come la riunione di Among Us)
+  function tabletHtml() {
+    const d = data()
+    const st = d.state
+    const alive = toArray(st.participants).filter((u) => d.players[u])
+    const voted = alive.filter((u) => d.votes[u]).length
+    const mine = d.votes[me.uid] || null
+    const tiles = alive
+      .map((u) => {
+        const p = d.players[u]
+        const isMe = u === me.uid
+        const img = p.photo ? `<img src="${esc(p.photo)}" alt="" />` : '<span aria-hidden="true">👤</span>'
+        return `<button class="tile ${mine === u ? 'sel' : ''}" data-act="vote" data-uid="${esc(u)}" ${isMe ? 'disabled' : ''}>
+          <div class="av" style="--leg:${esc(p.color || '#9aa0a6')}">${img}</div>
+          <div class="who">
+            <span class="nm">${esc(p.name)}${isMe ? ' (tu)' : ''}</span>
+            ${mine === u ? '<span class="pick">Il tuo voto</span>' : ''}
+            ${d.votes[u] ? '<span class="stk">✓ ha votato</span>' : ''}
+          </div>
+        </button>`
+      })
+      .join('')
+    const rows = cluesRows(d, st)
+    return `<div class="tablet">
+      <span class="cam"></span>
+      <div class="screen">
+        <header>
+          <h2>Chi è l'impostore?</h2>
+          <span class="timer"><span data-timer></span>s</span>
+        </header>
+        <div class="tiles">${tiles}</div>
+        <aside class="t-clues"><h3>Indizi</h3>${rows || '<p class="hint">Nessun indizio</p>'}</aside>
+        <footer>${voted}/${alive.length} hanno votato · ${mine ? 'puoi ancora cambiare voto' : 'tocca un giocatore per votarlo'}</footer>
+      </div>
+    </div>`
+  }
+
   function modalHtml() {
     const d = data()
     const st = d.state
     if (!st) return ''
+    if (st.phase === 'voting') return tabletHtml()
     if (st.phase === 'guess') {
       const r = myRole()
       if (r && r.imp)
@@ -553,15 +656,24 @@ export function startGame(root, onExit, opts = {}) {
     }
     if (st.phase === 'result') {
       const crew = st.winner === 'crew'
+      const who = toArray(st.participants)
+        .filter((u) => info.has(u))
+        .map((u) => {
+          const imp = u === st.impostor
+          return `<div class="who-char ${imp ? 'imp' : ''}">${charHtml(info.get(u), 'small')}<span>${esc(nameOf(u))}</span>${
+            imp ? '<em>Impostore</em>' : ''
+          }</div>`
+        })
+        .join('')
       const lines = Object.entries(d.votes || {})
-        .filter(([a, b]) => b && (d.players[a] || names.has(a)))
+        .filter(([a, b]) => b && info.has(a))
         .map(([a, b]) => `<li>${esc(nameOf(a))} → ${esc(nameOf(b))}</li>`)
         .join('')
-      return `<div class="card ${crew ? 'win' : 'lose'}">
-        <p class="eyebrow">Fine partita</p>
-        <h2 class="big ${crew ? '' : 'bad'}">${crew ? 'Vincono i giocatori!' : "Vince l'impostore!"}</h2>
-        <p>${esc(reasonText(st))}</p>
-        <p>L'impostore era <b>${esc(nameOf(st.impostor))}</b><br />La parola era <b>${esc(cap(st.word))}</b> <span class="hint">(${esc(st.category)})</span></p>
+      return `<div class="endscreen ${crew ? 'win' : 'lose'}">
+        <h1 class="end-title">${crew ? 'Vincono i giocatori' : "Vince l'impostore"}</h1>
+        <p class="end-reason">${esc(reasonText(st))}</p>
+        <div class="who-row">${who}</div>
+        <p>La parola era <b>${esc(cap(st.word))}</b> <span class="hint">(${esc(st.category)})</span></p>
         ${lines ? `<details><summary>Chi ha votato chi</summary><ol class="votes">${lines}</ol></details>` : ''}
         ${
           session.isHost()
@@ -616,17 +728,15 @@ export function startGame(root, onExit, opts = {}) {
 
   function renderHud() {
     if (!connected || fatal || !session) return
+    const game = inGame()
+    canvas.hidden = game
+    elTable.hidden = !game
+    setHtml(elTable, 'table', game ? tableHtml() : '')
+
     const text = bannerInfo()
     const hasTimer = !!data().state?.deadline
     setHtml(elBanner, 'banner', `${esc(text)}${hasTimer ? ' <span class="timer"><span data-timer></span>s</span>' : ''}`)
     elBanner.hidden = !text
-
-    const role = roleHtml()
-    setHtml(elRole, 'role', role)
-    elRole.hidden = !role
-    elRole.classList.toggle('impostor', !!myRole()?.imp)
-
-    setHtml(elRoleCard, 'rolecard', roleCardHtml())
 
     const log = logHtml()
     setHtml(elLog, 'log', log)
@@ -639,10 +749,12 @@ export function startGame(root, onExit, opts = {}) {
     const modal = modalHtml()
     if (modal) {
       if (elModal.hidden) clearKeys()
+      elModal.classList.toggle('solid', data().state?.phase === 'result')
       setHtml(elModal, 'modal', modal)
       elModal.hidden = false
     } else if (sigs.modal != null) {
       sigs.modal = null
+      elModal.classList.remove('solid')
       elModal.hidden = true
       elModal.innerHTML = ''
     }
@@ -682,6 +794,17 @@ export function startGame(root, onExit, opts = {}) {
     }
   }
 
+  // L'indizio non può contenere la parola segreta (solo per gli innocenti).
+  function usesSecretWord(text, word) {
+    const nw = normalize(word)
+    const nt = normalize(text)
+    const tokens = text
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .map(normalize)
+    return tokens.includes(nw) || nt === nw || (/\s/.test(word) && nt.includes(nw))
+  }
+
   function onClick(e) {
     const b = e.target.closest('[data-act]')
     if (!b || b.disabled) return
@@ -702,8 +825,8 @@ export function startGame(root, onExit, opts = {}) {
       case 'copy':
         copyLink()
         break
-      case 'roleok':
-        closeRoleCard()
+      case 'revealok':
+        closeReveal()
         break
       case 'start':
         b.disabled = true
@@ -718,12 +841,10 @@ export function startGame(root, onExit, opts = {}) {
         session.vote(b.dataset.uid)
         break
       case 'clue': {
-        const text = (drafts['clue-input'] || '').trim()
+        const text = (drafts['clue-input'] || '').replace(/\s+/g, ' ').trim()
         if (!text) return
-        if (/\s/.test(text)) return toast('Scrivi una sola parola!')
         const r = myRole()
-        if (r && !r.imp && normalize(text) === normalize(d.secret.word))
-          return toast('Non puoi usare la parola segreta!')
+        if (r && !r.imp && usesSecretWord(text, d.secret.word)) return toast('Non puoi usare la parola segreta!')
         if (session.submitClue(text)) drafts['clue-input'] = ''
         else toast('Non è il tuo turno.')
         break
@@ -757,11 +878,11 @@ export function startGame(root, onExit, opts = {}) {
       safeSet(PHOTO_KEY, url)
       showProfileCard()
     } catch {
-      showProfileCard('Questa immagine non si apre: prova con un\'altra foto.')
+      showProfileCard("Questa immagine non si apre: prova con un'altra foto.")
     }
   })
 
-  // ---------- Movimento ----------
+  // ---------- Movimento (solo nella lobby) ----------
   function update(dt, now) {
     if (!session) return
     const d = data()
@@ -840,7 +961,7 @@ export function startGame(root, onExit, opts = {}) {
     }
   }
 
-  // ---------- Disegno ----------
+  // ---------- Disegno della lobby ----------
   function polyPath(scale) {
     ctx.beginPath()
     VERTS.forEach((v, i) => {
@@ -882,53 +1003,12 @@ export function startGame(root, onExit, opts = {}) {
     ctx.restore()
   }
 
-  function bubble(text, x, y, u) {
-    ctx.font = `600 ${Math.max(11, u * 0.05)}px system-ui, sans-serif`
-    const bw = ctx.measureText(text).width + u * 0.06
-    const bh = u * 0.08
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath()
-    if (ctx.roundRect) ctx.roundRect(x - bw / 2, y - bh, bw, bh, bh / 2)
-    else ctx.rect(x - bw / 2, y - bh, bw, bh)
-    ctx.fill()
-    ctx.beginPath()
-    ctx.moveTo(x - u * 0.015, y)
-    ctx.lineTo(x + u * 0.015, y)
-    ctx.lineTo(x, y + u * 0.02)
-    ctx.closePath()
-    ctx.fill()
-    ctx.fillStyle = '#14152b'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(text, x, y - bh / 2 + 1)
-  }
-
-  function ringFor(uid, st) {
-    if (!st) return null
-    if (st.phase === 'clues' && toArray(st.turnOrder)[st.turnIndex] === uid) return '#ffd54f'
-    if ((st.phase === 'guess' || st.phase === 'result') && st.accused === uid) return '#ff4d6d'
-    if (st.phase === 'result' && st.impostor === uid) return '#ff4d6d'
-    return null
-  }
-
   function drawPlayer(uid, s) {
-    const d = data()
-    const p = d.players[uid]
+    const p = data().players[uid]
     if (!p) return
-    const st = d.state
     const u = R
     const x = cx + s.x * R
     const y = cy + s.y * R
-
-    // anello di evidenza (turno / accusato / impostore svelato)
-    const ring = ringFor(uid, st)
-    if (ring) {
-      ctx.strokeStyle = ring
-      ctx.lineWidth = 0.014 * u
-      ctx.beginPath()
-      ctx.ellipse(x, y + 0.1 * u, 0.1 * u, 0.04 * u, 0, 0, Math.PI * 2)
-      ctx.stroke()
-    }
 
     // ombra
     ctx.fillStyle = 'rgba(0,0,0,0.3)'
@@ -977,34 +1057,15 @@ export function startGame(root, onExit, opts = {}) {
     ctx.arc(hx, hy, hr, 0, Math.PI * 2)
     ctx.stroke()
 
-    // nome sotto i piedi (con ✓ se ha già votato)
-    const voted = st && st.phase === 'voting' && d.votes[uid]
+    // nome sotto i piedi
     ctx.font = `600 ${Math.max(11, u * 0.045)}px system-ui, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'alphabetic'
     ctx.lineWidth = 3
     ctx.strokeStyle = 'rgba(10,10,22,0.9)'
     ctx.fillStyle = '#ffffff'
-    const label = `${p.name}${voted ? ' ✓' : ''}`
-    ctx.strokeText(label, x, y + 0.17 * u)
-    ctx.fillText(label, x, y + 0.17 * u)
-    if (st && st.phase === 'result' && st.impostor === uid) {
-      ctx.fillStyle = '#ff4d6d'
-      ctx.font = `700 ${Math.max(10, u * 0.04)}px system-ui, sans-serif`
-      ctx.strokeText('IMPOSTORE', x, y + 0.225 * u)
-      ctx.fillText('IMPOSTORE', x, y + 0.225 * u)
-    }
-
-  }
-
-  // Il fumetto con l'indizio si disegna dopo tutti i personaggi, così non finisce coperto.
-  function drawClue(uid, s) {
-    const d = data()
-    const st = d.state
-    const clue = st && st.phase !== 'lobby' ? d.clues[uid] : null
-    if (clue == null || !d.players[uid]) return
-    const u = R
-    bubble(clue, cx + s.x * R, cy + s.y * R - 0.055 * u - 0.075 * u - 0.03 * u, u)
+    ctx.strokeText(p.name, x, y + 0.17 * u)
+    ctx.fillText(p.name, x, y + 0.17 * u)
   }
 
   function draw() {
@@ -1013,7 +1074,6 @@ export function startGame(root, onExit, opts = {}) {
     if (!session) return
     const list = [...sprites.entries()].filter(([, s]) => s.init).sort((a, b) => a[1].y - b[1].y)
     for (const [uid, s] of list) drawPlayer(uid, s)
-    for (const [uid, s] of list) drawClue(uid, s)
   }
 
   // ---------- Loop ----------
@@ -1023,7 +1083,7 @@ export function startGame(root, onExit, opts = {}) {
     const dt = Math.min((now - last) / 1000, 0.05)
     last = now
     update(dt, now)
-    draw()
+    if (!inGame()) draw()
     raf = requestAnimationFrame(frame)
   }
   raf = requestAnimationFrame(frame)
@@ -1034,7 +1094,7 @@ export function startGame(root, onExit, opts = {}) {
     destroyed = true
     cancelAnimationFrame(raf)
     clearInterval(timerInterval)
-    clearTimeout(roleTimer)
+    clearTimeout(revealTimer)
     ro.disconnect()
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
